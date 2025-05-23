@@ -3,11 +3,12 @@
 #include <string>
 #include <exception>
 #include <list>
+#include <vector>
 #include <thread>
 #include <functional>
 #include <mutex>
 #include <condition_variable>
-
+#include <signal.h>
 
 extern "C" {
 #include <sys/socket.h>
@@ -37,12 +38,14 @@ struct SocketInformation {
 
 void usage();
 uint8_t parse(int argc,char* argv[]);
-void ConnectionManagerThread(SocketInformation serverInformation, list<SocketInformation>& clients, const uint8_t mode);
-//static void CommThread(SocketInformation* clientInformationPtr, const uint8_t mode);
+void ConnectionManagerThread(list<SocketInformation>& clients, const uint16_t port, const uint8_t mode);
 void CommThread(SocketInformation& clientInformation, const uint8_t mode);
+void Clean();
+void SignalHandler(int signal);
 
 mutex g_mtx{};
 condition_variable g_cv{};
+SocketInformation g_serverInfomation{};
 
 int main(int argc, char* argv[]) {
     uint8_t mod{};
@@ -50,71 +53,47 @@ int main(int argc, char* argv[]) {
 
     uint16_t port = stoi(argv[1]);
 
-    thread connectionManager{};
-    SocketInformation serverInfomation{};
     list<SocketInformation> clients{};
 
     try {
-        if((serverInfomation.sock_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) throw runtime_error("Failed to call socket");
+        signal(SIGTERM, SignalHandler);
+        signal(SIGINT, SignalHandler);
 
-        int option = 1;
+        cout<<"===Server Open==="<<endl;
 
-        if (setsockopt(serverInfomation.sock_, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option)) == -1) throw runtime_error("Failed to call setsockopt");
+        thread connectionManager(ConnectionManagerThread, std::ref(clients), port, mod);
+        connectionManager.detach();
 
-        serverInfomation.information_.sin_family = AF_INET;
-        serverInfomation.information_.sin_port = htons(port);
-        serverInfomation.information_.sin_addr.s_addr = INADDR_ANY;
+        bool broadCast = mod & mode::broadcast;
 
-        if(bind(serverInfomation.sock_, reinterpret_cast<sockaddr*>(&serverInfomation.information_), sizeof(serverInfomation.information_)))
-            throw runtime_error("Failed to call bind");
+        while(1) {
+            if(broadCast) {
+                static string input;
 
-        if(listen(serverInfomation.sock_, SOMAXCONN)) throw runtime_error("Failed to call listen");
+                cout<<"=== Controller ==="<<endl;
+                cout<<"INPUT : "; getline(cin, input); //cin>>input;
 
-        /*while(1) {
-            list<SocketInformation> clients{};
-            uint32_t informationLen = sizeof(SocketInformation::information_);
+                if(input.find("end") != string::npos) break;
 
-            while(1) {
-                SocketInformation tmp{};
+                unique_lock<mutex> lck(g_mtx);
 
-                tmp.information_.sin_family = AF_INET;
-
-                if((tmp.sock_ = accept(serverInfomation.sock_, reinterpret_cast<sockaddr*>(&tmp.information_), &informationLen)) == -1)
-                    runtime_error("Fialed to call accept");
-
-                clients.push_back(tmp);
                 clients.remove_if([](SocketInformation si) {
-                    if(si.sock_ == NULL) return true;
+                    if(si.sock_ == -1) return true;
                     return false;
                 });
 
-                thread t(CommThread, &clients.back(), mod);
-                t.detach();
+                for(const SocketInformation& c : clients)
+                    if(send(c.sock_, input.c_str(), input.length(), 0) < 0) throw runtime_error("Failed to call send");
+
+                lck.unlock();
             }
-        }*/
-
-        connectionManager = thread(ConnectionManagerThread, serverInfomation, std::ref(clients), mod);
-
-        string input;
-
-        while(1) {
-            cout<<"===CONTROLLER==="<<endl;
-            cout<<"INPUT : "; getline(cin, input); //cin>>input;
-
-            if(input.find("end") != -1) break;
-
-            unique_lock<mutex> lck(g_mtx);
-            for(const SocketInformation& c : clients)
-                if(send(c.sock_, input.c_str(), input.length(), 0) < 0) throw runtime_error("Failed to call send");
-	    break;
         }
     }catch(const exception& e) {
         LOG(WARNING)<<"[main] "<<e.what()<<endl;
         LOG(WARNING)<<"ERROR : "<<strerror(errno)<<endl;
     }
 
-    if(serverInfomation.sock_ != NULL) close(serverInfomation.sock_);
-    if(connectionManager.joinable()) connectionManager.join();
+    Clean();
 }
 
 void usage() {
@@ -144,57 +123,58 @@ uint8_t parse(int argc, char* argv[]) {
     return ret;
 }
 
-void ConnectionManagerThread(SocketInformation serverInformation, list<SocketInformation>& clients, const uint8_t mode) {
-    list<thread> threadHandles{};
-
+void ConnectionManagerThread(list<SocketInformation>& clients, const uint16_t port, const uint8_t mode) {
     uint32_t informationLen = sizeof(SocketInformation::information_);
 
     try {
-        while(1) {
+        if((g_serverInfomation.sock_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) throw runtime_error("Failed to call socket");
+
+        int option = 1;
+
+        if (setsockopt(g_serverInfomation.sock_, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option)) == -1) throw runtime_error("Failed to call setsockopt");
+
+        g_serverInfomation.information_.sin_family = AF_INET;
+        g_serverInfomation.information_.sin_port = htons(port);
+        g_serverInfomation.information_.sin_addr.s_addr = INADDR_ANY;
+
+        if(bind(g_serverInfomation.sock_, reinterpret_cast<sockaddr*>(&g_serverInfomation.information_), sizeof(g_serverInfomation.information_)))
+            throw runtime_error("Failed to call bind");
+
+        if(listen(g_serverInfomation.sock_, SOMAXCONN)) throw runtime_error("Failed to call listen");
+
+        while(1) {    
             SocketInformation tmp{};
 
             tmp.information_.sin_family = AF_INET;
 
-            if((tmp.sock_ = accept(serverInformation.sock_, reinterpret_cast<sockaddr*>(&serverInformation.information_), &informationLen)) == -1)
+            if((tmp.sock_ = accept(g_serverInfomation.sock_, reinterpret_cast<sockaddr*>(&g_serverInfomation.information_), &informationLen)) == -1)
                 throw runtime_error("Failed to call accept");
 
             unique_lock lck(g_mtx);
             clients.push_back(tmp);
-            clients.remove_if([](SocketInformation si) {
-                if(si.sock_ == NULL) return true;
-                return false;
-            });
 
-            threadHandles.push_back(thread(CommThread, ref(clients.back()), mode));
+            thread t(CommThread, ref(clients.back()), mode);
+            t.detach();
+
             lck.unlock();
-            //thread t(CommThread, ref(clients.back()), mode);
-            //t.detach();
         }
     }catch(const exception& e) {
         LOG(WARNING)<<"[ConnectionThread] "<<e.what()<<endl;
     }
 
     for(const SocketInformation& c : clients)
-        if(c.sock_ != NULL) close(c.sock_);
-
-    for(thread& t : threadHandles)
-       if(t.joinable()) t.join();
+        if(c.sock_ != -1) close(c.sock_);
 }
 
 void CommThread(SocketInformation& clientInformation, const uint8_t mod) {
-    //SocketInformation* sockInfo = reinterpret_cast<SocketInformation*>(arg);
-
     char ip[INET_ADDRSTRLEN]{};
     inet_ntop(AF_INET, &clientInformation.information_.sin_addr, ip, sizeof(ip));
 
     char buf[BUFSIZE]{};
 
     bool echo = mod & mode::echo;
-    bool broadcast = mod & mode::broadcast;
 
     try {
-        //if(clientInformation == nullptr) throw runtime_error("Failed to convert SocketInformation");
-
         while(1) {
             switch (recv(clientInformation.sock_, buf, sizeof(buf), 0)) {
             case -1:
@@ -217,6 +197,20 @@ void CommThread(SocketInformation& clientInformation, const uint8_t mod) {
         LOG(WARNING)<<"[CommThread] "<<e.what()<<endl;
     }
 
+    unique_lock lck(g_mtx);
     close(clientInformation.sock_);
-    clientInformation.sock_ = NULL;
+    clientInformation.sock_ = -1;
+}
+
+void Clean() {
+    cout<<"\n===Server Close==="<<endl;
+
+    if(g_serverInfomation.sock_ != -1)
+        close(g_serverInfomation.sock_);
+}
+
+void SignalHandler(int signal) {
+    Clean();
+
+    exit(1);
 }
