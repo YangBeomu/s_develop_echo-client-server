@@ -5,6 +5,11 @@ CONFIG -= qt
 
 LIBS += -lglog
 DESTDIR = ../../bin
-OBJECTS_DIR = ../../obj/echo-client-server
+OBJECTS_DIR = ../../obj/echo-client/
+
 SOURCES += \
+        ../../include/ip.cpp \
         main.cpp
+
+HEADERS += \
+    ../../include/ip.h

@@ -84,8 +84,6 @@ int main(int argc, char* argv[]) {
 
                 for(const SocketInformation& c : clients)
                     if(send(c.sock_, input.c_str(), input.length(), 0) < 0) throw runtime_error("Failed to call send");
-
-                lck.unlock();
             }
         }
     }catch(const exception& e) {
@@ -191,7 +189,11 @@ void CommThread(SocketInformation& clientInformation, const uint8_t mod) {
 
                 break;
             }
+
+            memset(buf, 0, sizeof(buf));
         }
+
+
 
     }catch(const exception& e) {
         LOG(WARNING)<<"[CommThread] "<<e.what()<<endl;
